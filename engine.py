@@ -123,6 +123,20 @@ def is_response_invalid(role, content):
     for marker in preachy_markers:
         if marker in text_lower:
             return "preachy_leak"
+            
+    # 7. Speaker label prefix leaks (e.g. "T1:", "Student T3:", "Arjun:")
+    speaker_labels = [
+        "student_t1", "student_t2", "student_t3", "parent_t1", "parent_t2",
+        "student_c1", "student_c2", "student_c3", "parent_c1", "parent_c2",
+        "student t1", "student t2", "student t3", "parent t1", "parent t2",
+        "student c1", "student c2", "student c3", "parent c1", "parent c2",
+        "t1", "t2", "t3", "c1", "c2", "c3",
+        "arjun", "kiran", "vijay", "rhea", "aarav", "neha", "parent", "student"
+    ]
+    for label in speaker_labels:
+        if f"{label}:" in text_lower:
+            return "role_leak"
+            
     return None
 
 def log_qc_metric(metric_type):
