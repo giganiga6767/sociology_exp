@@ -1,0 +1,17 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model SimulationRun {
+  id                        Int      @id @default(autoincrement())
+  runType                   String   // e.g. "null", "ablated", "experimental"
+  lexicalAccommodationRatio Float    // accommodation ratio (e.g. cosmo slang use by regional agents)
+  cosmoTermCount            Int      // total cosmopolitan slang words detected
+  tier2TermCount            Int      // total regional slang words detected
+  createdAt                 DateTime @default(now())
+}

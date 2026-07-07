@@ -1,0 +1,41 @@
+# Virtual environment
+/venv/
+/ic_venv/
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node / Dashboard dependencies & builds
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/build/
+.next/
+
+# Environment credentials
+.env
+
+# Generated Output Data & Reports (saved in Desktop/exp_results)
+state_*.json
+analytics_*.json
+analytics_results.json
+quality_control_audit.json
+fsm_transitions.csv
+live_log.txt
+AblatedRun1_Report.*
+simulation_state.json
+simulation_report_*.docx
+simulation_report_*.pdf
+Ablated_Chat_Transcripts.docx
+Ablated_Simulation_Summary_Report.docx
+
+# Temp / OS files
+.DS_Store
+.idea/
+.vscode/
+*.log
+tmp/
+scratch/
