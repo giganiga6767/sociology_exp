@@ -163,15 +163,29 @@ def main():
     
     while True:
         try:
-            # Check which state file is active (Pass 1 or Pass 2)
+            # Check which state file is active dynamically (Pass 1 or Pass 2)
             active_file = None
             pass_num = 1
-            if os.path.exists(STATE_FILE_2):
-                active_file = STATE_FILE_2
-                pass_num = 2
-            elif os.path.exists(STATE_FILE_1):
-                active_file = STATE_FILE_1
-                pass_num = 1
+            
+            # Find all run state files in the directory
+            run_states = [f for f in os.listdir(LOG_DIR) if f.startswith("state_") and f.endswith(".json") and f != "state_human_baseline.json"]
+            active_config_base = None
+            if run_states:
+                # Resolve the latest modified file to detect current config target
+                latest_file = max([os.path.join(LOG_DIR, f) for f in run_states], key=os.path.getmtime)
+                filename = os.path.basename(latest_file)
+                if "_run" in filename:
+                    active_config_base = filename.replace("state_", "").split("_run")[0]
+            
+            if active_config_base:
+                file2 = os.path.join(LOG_DIR, f"state_{active_config_base}_run2.json")
+                file1 = os.path.join(LOG_DIR, f"state_{active_config_base}_run1.json")
+                if os.path.exists(file2):
+                    active_file = file2
+                    pass_num = 2
+                elif os.path.exists(file1):
+                    active_file = file1
+                    pass_num = 1
                 
             if active_file:
                 with open(active_file, "r") as f:
