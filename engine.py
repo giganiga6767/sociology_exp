@@ -559,6 +559,13 @@ def execute_agent_turn(agent, channel, config, state):
         log_qc_metric("fallback_triggers")
         log_qc_metric("valid_responses")
         
+    # Clean and sanitize thinking block from residual XML tags
+    if thinking:
+        for tag in ["<response>", "</response>", "<state_transition>", "</state_transition>", "<thinking>", "</thinking>"]:
+            if tag in thinking:
+                thinking = thinking.split(tag, 1)[0].strip()
+        thinking = thinking.replace("</thinking>", "").replace("<thinking>", "").strip()
+        
     print(f"Thinking: \"{thinking}\"")
     if new_state:
         print(f"State Transition: \"{new_state}\"")
