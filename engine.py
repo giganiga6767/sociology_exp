@@ -509,7 +509,7 @@ def execute_agent_turn(agent, channel, config, state):
         print("Brevity constraint active (under 5 words)")
 
     # Bounded query loop with Babbling/Slop Guard, Trigram Repetition Trap, and Role Leak Validation
-    max_attempts = 3
+    max_attempts = 8
     content = None
     thinking = None
     new_state = None
@@ -567,7 +567,10 @@ def execute_agent_turn(agent, channel, config, state):
             time.sleep(1)
     else:
         print("  Error: Failed to generate clean, in-character response. Activating safety fallback.")
-        content = "Sorry, I'm just too exhausted with backlogs and mocks right now. Let's talk later."
+        if agent.get("role") == "parent":
+            content = "Tinnava? Mock ela ayyindi? Call when free. Don't skip dinner. Money enough?"
+        else:
+            content = "Sorry, I'm just too exhausted with backlogs and mocks right now. Let's talk later."
         thinking = "System safety fallback activated to prevent context history corruption."
         new_state = "no_change"
         log_qc_metric("fallback_triggers")
