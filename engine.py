@@ -388,10 +388,13 @@ def format_history(channel_history, agent_name, agent_id, config=None, agent_obj
         )
         
     state_instructions = ""
+    allowed_states = ["no_change"]
     if config and agent_obj and "emotional_state_machine" in config:
         states = config["emotional_state_machine"]["states"]
         curr_state = agent_obj.get("current_state", "composed")
         triggers = states.get(curr_state, {}).get("triggers_to", {})
+        for s in triggers.keys():
+            allowed_states.append(s)
         triggers_text = ", ".join([f"'{s}' if {cond}" for s, cond in triggers.items()])
         
         state_instructions = (
@@ -399,8 +402,10 @@ def format_history(channel_history, agent_name, agent_id, config=None, agent_obj
             f"According to your emotional state machine, you can transition to:\n"
             f"  {triggers_text or 'no transitions from this state'}.\n"
             f"Evaluate if the recent dialogue has triggered any of these transitions or your mental health triggers.\n"
-            f"Declare your new state (or 'no_change' to remain in '{curr_state}') inside a <state_transition>new_state</state_transition> tag inside your thinking block.\n\n"
+            f"Declare your new state inside a <state_transition>new_state</state_transition> tag inside your thinking block.\n\n"
         )
+        
+    allowed_str = "/".join(allowed_states)
         
     prompt = (
         f"Here is the recent conversation transcript in this channel:\n\n"
@@ -411,8 +416,8 @@ def format_history(channel_history, agent_name, agent_id, config=None, agent_obj
         "Do not randomly revive old topics from your long-term memory if they are no longer being discussed in the recent channel history. Focus on the current topics in the active conversation, and let old topics naturally decay.\n\n"
         f"Structure your response exactly like this:\n"
         f"<thinking>\n"
-        f"My private first-person thoughts. "
-        f"<state_transition>no_change</state_transition>\n"
+        f"My private first-person thoughts.\n"
+        f"<state_transition>({allowed_str})</state_transition>\n"
         f"</thinking>\n"
         f"<response>\n"
         f"(Your actual spoken message here, max 3 sentences, no corporate language)\n"
