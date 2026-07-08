@@ -435,7 +435,8 @@ def query_ollama(system_prompt, user_content, seed=None):
         ],
         "options": {
             "temperature": 0.7,
-            "num_predict": 200  # Limit output to 200 tokens to prevent cutoffs while maintaining fast CPU generation
+            "num_predict": 200,  # Limit output to 200 tokens to prevent cutoffs while maintaining fast CPU generation
+            "num_ctx": 8192      # Prevent context truncation and model collapse over long sessions
         },
         "stream": False
     }
