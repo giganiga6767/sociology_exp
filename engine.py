@@ -14,7 +14,7 @@ STATE_FILE_PATH = "simulation_state.json"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL_NAME = "phi3"
 COOLDOWN_SECONDS = 5
-MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_MESSAGES = 6
 
 def extract_xml_tag(text, tag):
     """Extract content from an XML-like tag, supporting missing closing tags at the end of string."""
@@ -100,7 +100,7 @@ def get_agent_recent_memories(state, agent_id, max_memories=3):
             memories.append(f"Earlier in {channel_name}: '{thinking}'")
     return memories
 
-def is_response_invalid(role, content):
+def is_response_invalid(role, content, round_num=1):
     """Consolidated response output validator to enforce raw, slop-free dialogue."""
     text_lower = content.lower()
     # 1. XML tags check
@@ -137,12 +137,19 @@ def is_response_invalid(role, content):
         if f"{label}:" in text_lower:
             return "role_leak"
             
+    # 8. Blacklisted preachy/corporate words (ChatGPT slop filter)
+    blacklist = ["let's", "furthermore", "additionally", "indeed", "overall", "navigate", "journey", "perspective"]
+    for word in blacklist:
+        if word in text_lower:
+            print(f"  Validation failure: blacklisted corporate word detected ('{word}').")
+            return "preachy_leak"
+            
     return None
 
-def log_qc_metric(metric_type):
-    """Log quality-control metrics and retries in quality_control_audit.json."""
+def log_qc_metric(metric_type, round_num=None, data_value=None):
+    """Log quality-control metrics, retries, and paper metrics in quality_control_audit.json."""
     audit_file = "quality_control_audit.json"
-    data = {
+    default_data = {
         "total_attempts": 0,
         "valid_responses": 0,
         "xml_tags": 0,
@@ -151,15 +158,40 @@ def log_qc_metric(metric_type):
         "trigram_repetition": 0,
         "empty_content": 0,
         "preachy_leak": 0,
-        "fallback_triggers": 0
+        "fallback_triggers": 0,
+        "first_hallucination_round": None,
+        "first_role_leak_round": None,
+        "mood_transitions_count": 0,
+        "total_word_count": 0,
+        "total_messages": 0,
+        "average_reply_length": 0.0
     }
+    data = default_data.copy()
     if os.path.exists(audit_file):
         try:
             with open(audit_file, "r") as f:
-                data = json.load(f)
+                loaded = json.load(f)
+                for k, v in loaded.items():
+                    data[k] = v
         except Exception:
             pass
-    data[metric_type] = data.get(metric_type, 0) + 1
+            
+    # Standard counters
+    if metric_type in ["total_attempts", "valid_responses", "xml_tags", "no_change_leak", "role_leak", "trigram_repetition", "empty_content", "preachy_leak", "fallback_triggers"]:
+        data[metric_type] = data.get(metric_type, 0) + 1
+        
+    # Specialty metrics
+    if metric_type == "hallucination" and data["first_hallucination_round"] is None and round_num is not None:
+        data["first_hallucination_round"] = round_num
+    if metric_type == "role_leak" and data["first_role_leak_round"] is None and round_num is not None:
+        data["first_role_leak_round"] = round_num
+    if metric_type == "mood_transition":
+        data["mood_transitions_count"] = data.get("mood_transitions_count", 0) + 1
+    if metric_type == "message_words" and data_value is not None:
+        data["total_messages"] = data.get("total_messages", 0) + 1
+        data["total_word_count"] = data.get("total_word_count", 0) + data_value
+        data["average_reply_length"] = round(data["total_word_count"] / data["total_messages"], 2)
+        
     try:
         with open(audit_file, "w") as f:
             json.dump(data, f, indent=2)
@@ -365,7 +397,73 @@ def get_authorized_agents(config, channel_name):
             authorized.append(agent)
     return authorized
 
-def format_history(channel_history, agent_name, agent_id, config=None, agent_obj=None):
+PERSONALITY_ANCHORS = {
+    "student_t1": {
+        "weak_subject": "Organic Chemistry",
+        "strong_subject": "Physics (Mechanics)",
+        "insecurity": "Worrying about draining father's life savings for coaching fees",
+        "coping_mechanism": "Scrolling JEE memes and going silent",
+        "texting_style": "Clipped sentences under 12 words, frequent typos, using 'lite' and 'bro'",
+        "emoji_habit": "Rarely uses emojis, occasionally '😣' when stressed",
+        "fav_slang": "lite, scene, nana, em ayindi"
+    },
+    "student_t2": {
+        "weak_subject": "Math (Calculus)",
+        "strong_subject": "Chemistry (Inorganic)",
+        "insecurity": "Feeling like they don't belong in Bangalore, intense homesickness",
+        "coping_mechanism": "Eating heavy snacks, daydreaming about hometown food",
+        "texting_style": "Short hesitant texts, lots of question marks, using 'amma' and 'ra'",
+        "emoji_habit": "Uses '😅' when defensive or nervous",
+        "fav_slang": "ra, tinnava, hostel food bad"
+    },
+    "student_t3": {
+        "weak_subject": "Physics (Electromagnetism)",
+        "strong_subject": "Math (Coordinate Geometry)",
+        "insecurity": "Fear of being sent back to Tier-3 village school if cutoff missed",
+        "coping_mechanism": "Studying 14 hours straight until headache",
+        "texting_style": "Blunt, serious, very direct, rarely chitchats",
+        "emoji_habit": "Almost never uses emojis",
+        "fav_slang": "anna, work done"
+    },
+    "student_c1": {
+        "weak_subject": "Inorganic Chemistry",
+        "strong_subject": "Math (Vectors)",
+        "insecurity": "Not getting into top NIT to match older brother in US",
+        "coping_mechanism": "Drinking iced coffee and complaining about the weather",
+        "texting_style": "Uses standard internet English, lots of lowercase, no punctuation",
+        "emoji_habit": "Uses 'chill', 'bro', and 'lite' with '⚡' or '🍔'",
+        "fav_slang": "chill, bro, fr, abt"
+    },
+    "student_c2": {
+        "weak_subject": "Physics (Thermodynamics)",
+        "strong_subject": "Organic Chemistry",
+        "insecurity": "Disappointing parent who is a software director at Google",
+        "coping_mechanism": "Listening to lo-fi music and scrolling Instagram",
+        "texting_style": "Frequent abbreviations like 'coz', 'abt', 'idk', 'fr'",
+        "emoji_habit": "Uses '👍' or '🙄' occasionally",
+        "fav_slang": "bro, chill, fr, idk, coz"
+    },
+    "student_c3": {
+        "weak_subject": "Math (Probability)",
+        "strong_subject": "Physics (Optics)",
+        "insecurity": "Impostor syndrome among high-scoring batchmates",
+        "coping_mechanism": "Sleeping 10 hours and ignoring calls",
+        "texting_style": "Slightly formal but casual, uses 'broo' and 'haan'",
+        "emoji_habit": "Uses '😂' or '🤔' when confused",
+        "fav_slang": "broo, haan, acha"
+    }
+}
+
+EMOTIONAL_MEMORIES = {
+    "student_t1": "Last mock: Bad | Parent called: Yesterday | Sleep: 4 hrs | Money: Running low",
+    "student_t2": "Last mock: Average | Parent called: Two days ago | Sleep: 5 hrs | Money: Okay",
+    "student_t3": "Last mock: Good | Parent called: Last week | Sleep: 4 hrs | Money: Very tight",
+    "student_c1": "Last mock: Average | Parent called: Today | Sleep: 6 hrs | Money: Plenty",
+    "student_c2": "Last mock: Bad | Parent called: Yesterday | Sleep: 5 hrs | Money: Plenty",
+    "student_c3": "Last mock: Good | Parent called: Yesterday | Sleep: 6 hrs | Money: Okay"
+}
+
+def format_history(channel_history, agent_name, agent_id, config=None, agent_obj=None, channel_name=""):
     """Format the recent channel messages into a dialogue transcript."""
     if not channel_history:
         return "The channel is currently empty. Start the conversation."
@@ -387,6 +485,89 @@ def format_history(channel_history, agent_name, agent_id, config=None, agent_obj
             "\n\n"
         )
         
+    role = agent_obj.get("role", "student") if agent_obj else "student"
+    
+    # Personality & Register Separations
+    personality_anchors = ""
+    if agent_id in PERSONALITY_ANCHORS:
+        anchor = PERSONALITY_ANCHORS[agent_id]
+        personality_anchors = (
+            f"\nPERSONALITY ATTRIBUTES:\n"
+            f"- Favorite Subject (Strong): {anchor['strong_subject']}\n"
+            f"- Weakest Subject: {anchor['weak_subject']}\n"
+            f"- Insecurity: {anchor['insecurity']}\n"
+            f"- Coping Mechanism: {anchor['coping_mechanism']}\n"
+            f"- Texting Style: {anchor['texting_style']}\n"
+            f"- Emoji Habits: {anchor['emoji_habit']}\n"
+        )
+        
+    emotional_memory = ""
+    if agent_id in EMOTIONAL_MEMORIES:
+        emotional_memory = f"\nEMOTIONAL RECENT HISTORY:\n{EMOTIONAL_MEMORIES[agent_id]}\n"
+        
+    channel_register = ""
+    if channel_name == "Global_Square":
+        channel_register = (
+            "\nCHANNEL SPECIFIC RULES (Global_Square):\n"
+            "- Keep register short, casual, and informal (teasing, jokes, syllabus, prep).\n"
+            "- NEVER mention vulnerable family issues, homesickness, or money concerns here.\n"
+        )
+    elif "Family" in channel_name:
+        channel_register = (
+            "\nCHANNEL SPECIFIC RULES (Family Channel):\n"
+            "- Talk about private, personal things: family health, crops, home food, money pressure, and exam stress.\n"
+        )
+        
+    # Consensus breaking randomness & anti-agreement rules
+    break_consensus_rules = ""
+    if role == "student":
+        # Introduce dynamic topic distractions
+        distractions = [
+            "hostile hostel food (soggy idli)",
+            "laundry pile piling up",
+            "roommate snoring loudly",
+            "canteen got awkward yesterday",
+            "buying new physics guidebook",
+            "power cut in hostel",
+            "losing room key",
+            "missed morning alarm"
+        ]
+        curr_distraction = random.choice(distractions)
+        
+        # Determine randomized consensus breaker behavior
+        rand_style = random.random()
+        if rand_style < 0.30:
+            style_cue = f"Ignore the previous message completely. Shift the focus to a sudden distraction: {curr_distraction}."
+        elif rand_style < 0.50:
+            style_cue = "Ignore the last message. Instead, address or respond to the message from two turns ago."
+        elif rand_style < 0.70:
+            style_cue = f"Ignore the topic entirely and ask an unrelated question: {curr_distraction}."
+        elif rand_style < 0.85:
+            style_cue = "Challenge someone in the conversation directly or state a mild disagreement (e.g. 'nah', 'no way', 'bruh', 'leave it', 'you are overthinking')."
+        else:
+            style_cue = "Keep your response focused on your own weak/strong subject or exam marks."
+            
+        break_consensus_rules = (
+            f"\nDIVERSITY & ANOMALY RULES:\n"
+            f"- NEVER simply agree with what the previous student said.\n"
+            f"- Never paraphrase or echo the previous message.\n"
+            f"- EMOJI LIMIT: Limit emojis. Only 15-20% of your messages should have one. Otherwise use NONE.\n"
+            f"- BANNED WORDS: Never use ChatGPT slop words: 'Let's', 'Furthermore', 'Additionally', 'Indeed', 'Overall', 'Balance', 'Navigate', 'Journey', 'Perspective'.\n"
+            f"- TEXTING TYPOS: Add natural typos and shortcuts: 'coz', 'abt', 'idk', 'fr', 'broo', 'haan', 'acha', 'arre', 'nothin'. Keep it lowercase.\n"
+            f"- CURRENT TURN INSTRUCTION: {style_cue}\n"
+        )
+    elif role == "parent":
+        # Short, worried parent directives
+        break_consensus_rules = (
+            f"\nDIVERSITY & PARENT ANCHOR RULES:\n"
+            f"- Speak like a realistic, worried Indian parent.\n"
+            f"- Keep your message extremely short (under 12 words).\n"
+            f"- Ask practical questions: Ate? (Tinnava? / Ate?), sleep, marks, money.\n"
+            f"- DO NOT write polished preachy sentences or essays about balance, journey, or navigating stress.\n"
+            f"- EMOJI LIMIT: Limit emojis to at most 1 (uses simple '😊' or none).\n"
+            f"- BANNED WORDS: Never use ChatGPT slop words: 'Let's', 'Furthermore', 'Additionally', 'Indeed', 'Overall', 'Balance', 'Navigate', 'Journey', 'Perspective'.\n"
+        )
+        
     state_instructions = ""
     allowed_states = ["no_change"]
     if config and agent_obj and "emotional_state_machine" in config:
@@ -406,12 +587,16 @@ def format_history(channel_history, agent_name, agent_id, config=None, agent_obj
         )
         
     allowed_str = "/".join(allowed_states)
-        
+    
     prompt = (
         f"Here is the recent conversation transcript in this channel:\n\n"
         f"{transcript}\n\n"
         f"{own_speech_context}"
         f"You are {agent_name}. You must talk in the first person as yourself. Do not write a third-person analysis.\n\n"
+        f"{personality_anchors}"
+        f"{emotional_memory}"
+        f"{channel_register}"
+        f"{break_consensus_rules}"
         f"{state_instructions}"
         "Do not randomly revive old topics from your long-term memory if they are no longer being discussed in the recent channel history. Focus on the current topics in the active conversation, and let old topics naturally decay.\n\n"
         f"Structure your response exactly like this:\n"
@@ -461,12 +646,18 @@ def query_ollama(system_prompt, user_content, seed=None):
 
 def execute_agent_turn(agent, channel, config, state):
     """Execute a single agent's response turn within a channel."""
+    # Silence Heuristic: 20% chance for a student to remain silent (skip turn)
+    if agent.get("role") == "student" and random.random() < 0.20:
+        print(f"\n--- Turn {state['turn_count'] + 1} (SKIPPED) ---")
+        print(f"Agent {agent['name']} ({agent['id']}) decides to remain silent (Silence Heuristic).")
+        return True
+        
     print(f"\n--- Turn {state['turn_count'] + 1} ---")
     print(f"Channel: {channel}")
     print(f"Agent: {agent['name']} ({agent['id']}, Cohort: {agent['cohort']}, Role: {agent['role']})")
     
     # Format history and extract prompt (including rolling self-speech memory and state machine instructions)
-    history_prompt = format_history(state["channels"][channel], agent["name"], agent["id"], config, agent)
+    history_prompt = format_history(state["channels"][channel], agent["name"], agent["id"], config, agent, channel)
     
     # Resolve system prompt placeholders if state machine is active
     system_prompt = agent["system_prompt"]
@@ -505,12 +696,12 @@ def execute_agent_turn(agent, channel, config, state):
                 f"Do not announce them. Do not use all of them."
             )
             print(f"Injected Slang: {slang_list}")
-
-    # Dynamic brevity constraints (20% probability) to simulate silence and short chats
-    if random.random() < 0.20:
+ 
+    # Dynamic brevity constraints (25% probability) to simulate silence and short chats
+    if random.random() < 0.25:
         system_prompt += (
             "\nCRITICAL: Keep your response extremely brief (under 5 words). "
-            "Use simple words or short slang (e.g. 'yeah', 'lite', 'ok', 'idk', 'hmm')."
+            "Use simple words or short slang (e.g. 'k', 'hm', 'idk', 'ok', '👍', '...', 'lite')."
         )
         print("Brevity constraint active (under 5 words)")
 
@@ -558,12 +749,17 @@ def execute_agent_turn(agent, channel, config, state):
             content = content.replace("</state_transition>", "").replace("</thinking>", "").replace("</response>", "").strip()
             
             # Validate output quality to prevent context pollution, role leaks, or trigram repetition loops
-            validation_error = is_response_invalid(agent["role"], content)
+            current_round = state.get("round_count", 0) + 1
+            validation_error = is_response_invalid(agent["role"], content, round_num=current_round)
             if not validation_error:
                 log_qc_metric("valid_responses")
+                word_count = len(content.split())
+                log_qc_metric("message_words", data_value=word_count)
                 break
             else:
-                log_qc_metric(validation_error)
+                log_qc_metric(validation_error, round_num=current_round)
+                if validation_error in ["xml_tags", "no_change_leak", "trigram_repetition", "empty_content", "preachy_leak"]:
+                    log_qc_metric("hallucination", round_num=current_round)
                 print(f"  Warning: Generation rejected due to validation failure ({validation_error}) on attempt {attempt+1}. Retrying...")
         except Exception as e:
             print(f"  Warning: LLM query failed on attempt {attempt+1}: {e}")
@@ -595,6 +791,7 @@ def execute_agent_turn(agent, channel, config, state):
         if new_state in ["composed", "anxious", "defensive", "hostile", "withdrawn", "identity_fragmented"]:
             if new_state != previous_state:
                 print(f"  Updating {agent['id']} current state: {previous_state} -> {new_state}")
+                log_qc_metric("mood_transition")
                 
                 # FSM Transition Logging (CSV format for research/paper verification)
                 fsm_log_file = "fsm_transitions.csv"
@@ -719,9 +916,9 @@ def run_simulation_round(config, state):
     
     # Chronological Context Injector for 6-month longitudinal jumps
     time_jumps = {
-        6: "[SYSTEM EVENT: One month has passed. The first major All-India mock test results just dropped. Syllabus backlogs are already piling up, and the reality of the competition is setting in.]",
-        12: "[SYSTEM EVENT: Three months have passed. It is festival season back home, but you are stuck in your PG solving physics modules. The social isolation and homesickness are peaking.]",
-        18: "[SYSTEM EVENT: Five months have passed. The final intensive test series (AITS) has begun. The entire batch is operating on four hours of sleep. The academic pressure is crushing.]",
+        6: "[SYSTEM EVENT: One month has passed. The first major All-India mock test results just dropped. Rankings have shifted dramatically (Arjun dropped 50 ranks, Aarav climbed). PG roommate just threatened to move out because of midnight study lamps. Backlogs are piling up.]",
+        12: "[SYSTEM EVENT: Three months have passed. It is festival season back home (Diwali), but you are stuck in your PG solving physics modules. Homesickness is peaking. The hostel warden just conducted a surprise inspection and confiscated immersion heaters.]",
+        18: "[SYSTEM EVENT: Five months have passed. The final intensive test series (AITS) has begun. The entire batch is operating on four hours of sleep. Exams are tomorrow. The hostel mess ran out of clean water, forcing everyone to buy mineral water jars.]",
         23: "[SYSTEM EVENT: Six months have passed. The main exam is only weeks away. The cohort is completely burnt out but pushing forward on pure momentum and panic.]"
     }
     
